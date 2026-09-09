@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+coverage/
+.env
+.env.local
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Personal working material -- notes I keep to understand the project.
+# Not part of the submission.
+For my understanding/

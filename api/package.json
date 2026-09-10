@@ -8,7 +8,15 @@
     "migrate:status": "tsx scripts/migrate.ts --status",
     "seed": "tsx scripts/seed.ts",
     "db:reset": "tsx scripts/migrate.ts --reset --force && tsx scripts/migrate.ts && tsx scripts/seed.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "verify": "npm run typecheck && npm run test",
+    "build": "tsc -p tsconfig.build.json",
+    "start:prod": "node dist/api/src/server.js",
+    "migrate:prod": "node dist/api/scripts/migrate.js",
+    "seed:prod": "node dist/api/scripts/seed.js"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",

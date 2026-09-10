@@ -1,0 +1,1707 @@
+{
+  "info": {
+    "_postman_id": "831e0541-94ef-4526-8760-33245da0d928",
+    "name": "Equipment Cleaning Log API",
+    "description": "Take-home assignment — Full-Stack Engineer, Leucine.\n\nA cleaning log for pharmaceutical manufacturing equipment with a field-level audit trail.\n\n## How to use\n\n1. Start the API: `npm run dev` (listens on http://localhost:4000)\n2. Make sure the database is seeded: `npm run seed`\n3. **Run the whole collection** (Collection Runner) — folders are ordered so each request sets up the next, and every request carries assertions. A green run is a working API.\n\nOr step through folder by folder from the top.\n\n## Auth\n\nLogin returns a signed **httpOnly** cookie, which Postman's cookie jar stores and replays automatically — there is no token to copy. Folder 5 switches from an operator to a supervisor mid-run, which is how the role checks are demonstrated.\n\n## What is worth looking at\n\n- **Folder 4** — the audit trail: one event per save, one line per field that moved, and no event at all when nothing changed.\n- **Folder 5** — segregation of duties: an operator cannot verify their own work.\n- **Folder 6** — keyset pagination, with an assertion that no row appears on two pages.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1 · System",
+      "description": "Liveness, and proof the API is not readable without a session.",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/healthz",
+            "description": "Reports the database as well as the process. A 200 from a server that cannot reach PostgreSQL would be a health check that lies."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('process is ok', () => pm.expect(b.status).to.eql('ok'));",
+                  "pm.test('database is reachable', () => pm.expect(b.database).to.eql('ok'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Equipment without a session → 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipment",
+            "description": "Clears the cookie jar first, so this runs genuinely unauthenticated even mid-collection. A cleaning log is not public data: reads need a session too, not just writes."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Run this unauthenticated even if a previous request signed in.",
+                  "pm.cookies.jar().clear(pm.collectionVariables.get('host'), () => {});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error envelope', () => pm.expect(pm.response.json().error.code).to.eql('unauthorized'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2 · Auth",
+      "description": "Session is a signed httpOnly cookie. Postman's cookie jar stores it automatically, so every later request is authenticated.",
+      "item": [
+        {
+          "name": "Login — wrong password → 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/auth/login",
+            "description": "The message is identical whether the account exists or not, and the hash is verified even for an unknown email, so response timing does not reveal which addresses are registered.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{operatorEmail}}\",\n  \"password\": \"definitely-not-the-password\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('message gives nothing away', () =>",
+                  "  pm.expect(pm.response.json().error.message).to.eql('Incorrect email or password.'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login as operator (Priya)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/auth/login",
+            "description": "Signs in as an operator. Operators log cleanings but may NOT verify them.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{operatorEmail}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const u = pm.response.json().data;",
+                  "pm.test('role is operator', () => pm.expect(u.role).to.eql('operator'));",
+                  "pm.test('no password material in the response', () => {",
+                  "  pm.expect(u).to.not.have.property('passwordHash');",
+                  "  pm.expect(u).to.not.have.property('password_hash');",
+                  "});",
+                  "pm.collectionVariables.set('operatorId', u.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Current user",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/auth/me",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('same user as the login', () =>",
+                  "  pm.expect(pm.response.json().data.id).to.eql(pm.collectionVariables.get('operatorId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List users",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/auth/users",
+            "description": "Backs the 'cleaned by' picker in the UI, so it can name real people instead of accepting free text."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const users = pm.response.json().data;",
+                  "pm.test('returns users', () => pm.expect(users.length).to.be.above(0));",
+                  "pm.test('never exposes hashes', () =>",
+                  "  users.forEach(u => pm.expect(u).to.not.have.property('passwordHash')));",
+                  "const sup = users.find(u => u.role === 'supervisor');",
+                  "if (sup) pm.collectionVariables.set('supervisorId', sup.id);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3 · Equipment",
+      "description": "CRUD on the register, the role gate that protects it, and the audit trail it now writes. DELETE retires rather than removes — see folder 8.",
+      "item": [
+        {
+          "name": "List equipment",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipment?limit=20",
+            "description": "Keyset paginated on `code`, which is UNIQUE and therefore its own tiebreaker. Captures MIX-101's id for the rest of the collection."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('uniform page envelope', () => {",
+                  "  pm.expect(b).to.have.property('data');",
+                  "  pm.expect(b).to.have.property('pageInfo');",
+                  "  pm.expect(b.pageInfo).to.have.all.keys('page','pageSize','totalItems','totalPages');",
+                  "});",
+                  "const mix = b.data.find(e => e.code === 'MIX-101');",
+                  "pm.test('MIX-101 exists — run `npm run seed` if this fails', () =>",
+                  "  pm.expect(mix, 'MIX-101 not found').to.be.an('object'));",
+                  "if (mix) pm.collectionVariables.set('equipmentId', mix.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Operator cannot create equipment → 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/equipment",
+            "description": "The equipment register is controlled master data: operators log cleanings, supervisors and admins maintain the asset list. Renaming an asset silently re-labels every record already written against it, which is why it is not an operator action.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"OP-DENIED\",\n  \"name\": \"Should not be created\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('says which roles may do it', () =>",
+                  "  pm.expect(pm.response.json().error.message).to.match(/supervisor|admin/i));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login as supervisor (Ravi)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/auth/login",
+            "description": "Register writes need supervisor or admin. Everything from here to the end of this folder runs as Ravi.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{supervisorEmail}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('cookie set', () => pm.expect(pm.cookies.has('cl_session')).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create equipment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/equipment",
+            "description": "A fresh code is generated per run in the pre-request script, so the collection can be run repeatedly without colliding.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"{{newEquipmentCode}}\",\n  \"name\": \"Postman test asset\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Unique per run, so re-running the collection does not hit the unique index.",
+                  "pm.collectionVariables.set('newEquipmentCode', 'PM-' + Date.now().toString().slice(-8));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const e = pm.response.json().data;",
+                  "pm.test('defaults to active', () => pm.expect(e.status).to.eql('active'));",
+                  "pm.collectionVariables.set('newEquipmentId', e.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Asset audit after create",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipment/{{newEquipmentId}}/audit",
+            "description": "Equipment is audited on the same terms as cleaning records — same two tables, keyed by (entity_type, entity_id). Adding the second entity was one line of DDL in migration 006, because audit_events was never tied to cleaning_records by a foreign key."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const ev = pm.response.json().data;",
+                  "pm.test('exactly one create event', () => {",
+                  "  pm.expect(ev).to.have.lengthOf(1);",
+                  "  pm.expect(ev[0].action).to.eql('create');",
+                  "});",
+                  "pm.test('names code, name and status', () =>",
+                  "  pm.expect(ev[0].changes.map(c => c.fieldName).sort()).to.eql(['code','name','status']));",
+                  "pm.test('actor is the supervisor, taken from the session', () =>",
+                  "  pm.expect(ev[0].actorLabel).to.contain(pm.collectionVariables.get('supervisorEmail')));",
+                  "pm.collectionVariables.set('savedAssetEventCount', ev.length);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get equipment",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipment/{{newEquipmentId}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update equipment",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/equipment/{{newEquipmentId}}",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Postman test asset (renamed)\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('name changed', () =>",
+                  "  pm.expect(pm.response.json().data.name).to.contain('renamed'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Asset audit after rename — one event, one line",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipment/{{newEquipmentId}}/audit",
+            "description": "A rename moved one field, so the trail gains exactly one line — not a line per column submitted."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const ev = pm.response.json().data;",
+                  "pm.test('two events now, newest first', () => {",
+                  "  pm.expect(ev).to.have.lengthOf(2);",
+                  "  pm.expect(ev[0].action).to.eql('update');",
+                  "});",
+                  "pm.test('one field moved, and it is the name', () => {",
+                  "  pm.expect(ev[0].changes).to.have.lengthOf(1);",
+                  "  pm.expect(ev[0].changes[0].fieldName).to.eql('name');",
+                  "  pm.expect(ev[0].changes[0].newValue).to.contain('renamed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Re-save the SAME name (no-op) → no event",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/equipment/{{newEquipmentId}}",
+            "description": "Same rule as for cleaning records: a save that changed nothing writes no audit event. Months of empty \"someone updated this\" rows are what turn an audit trail into noise a reviewer has to read past.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Postman test asset (renamed)\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Asset audit unchanged after the no-op",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipment/{{newEquipmentId}}/audit",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const ev = pm.response.json().data;",
+                  "pm.test('still two events — the no-op wrote nothing', () =>",
+                  "  pm.expect(ev).to.have.lengthOf(2));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Duplicate code → 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/equipment",
+            "description": "The unique index is the authority. A pre-check with SELECT would still race, so the constraint is allowed to fire and its violation is translated to 409 — never a 500.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"MIX-101\",\n  \"name\": \"Duplicate\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));",
+                  "const err = pm.response.json().error;",
+                  "pm.test('conflict, not a server error', () => pm.expect(err.code).to.eql('conflict'));",
+                  "pm.test('names the offending field', () => pm.expect(err.details[0].path).to.eql('code'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Back to the operator (Priya)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/auth/login",
+            "description": "The rest of the collection runs as an operator, so the verification 403 in folder 5 is a real refusal rather than an accident of who happened to be signed in.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{operatorEmail}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('cookie set', () => pm.expect(pm.cookies.has('cl_session')).to.be.true);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4 · Cleaning records & the audit trail",
+      "description": "The heart of the assignment. Run these in order: each one sets up the next.",
+      "item": [
+        {
+          "name": "Create a cleaning record",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/equipment/{{equipmentId}}/cleaning-records",
+            "description": "`cleanedBy` defaults to the authenticated user but may name a colleague. Writes a `create` audit event in the same transaction.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cleanedAt\": \"2026-09-09T06:00:00Z\",\n  \"method\": \"manual\",\n  \"notes\": \"Post-changeover clean.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const r = pm.response.json().data;",
+                  "pm.test('starts pending', () => pm.expect(r.status).to.eql('pending'));",
+                  "pm.test('unverified fields are null', () => {",
+                  "  pm.expect(r.verifiedByUserId).to.be.null;",
+                  "  pm.expect(r.verifiedAt).to.be.null;",
+                  "});",
+                  "pm.collectionVariables.set('recordId', r.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Audit after create",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/cleaning-records/{{recordId}}/audit",
+            "description": "Every field holding a value moved from nothing to that value. Fields still empty emit NO line — null → null is not a change, and the database CHECK constraint would reject one."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const events = pm.response.json().data;",
+                  "pm.test('exactly one event', () => pm.expect(events).to.have.lengthOf(1));",
+                  "pm.test('action is create', () => pm.expect(events[0].action).to.eql('create'));",
+                  "pm.test('attributed to the session user', () =>",
+                  "  pm.expect(events[0].actorLabel).to.contain(pm.collectionVariables.get('operatorEmail')));",
+                  "pm.test('every line is null -> value', () =>",
+                  "  events[0].changes.forEach(c => pm.expect(c.oldValue).to.be.null));",
+                  "pm.test('no line for a field that was never set', () =>",
+                  "  pm.expect(events[0].changes.map(c => c.fieldName)).to.not.include('verified_at'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update TWO fields in one save",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/cleaning-records/{{recordId}}",
+            "description": "One act by one person at one instant, affecting two fields — which is exactly why the audit trail is a header table plus a lines table.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"cip\",\n  \"notes\": \"Rinse extended to 12 min.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Audit after update",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/cleaning-records/{{recordId}}/audit",
+            "description": "Two events now. The update carries exactly two lines: one per field that moved, grouped under one actor and timestamp."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const events = pm.response.json().data;",
+                  "pm.test('two events', () => pm.expect(events).to.have.lengthOf(2));",
+                  "const update = events[0]; // newest first",
+                  "pm.test('newest is the update', () => pm.expect(update.action).to.eql('update'));",
+                  "pm.test('exactly two field lines', () => pm.expect(update.changes).to.have.lengthOf(2));",
+                  "const byField = Object.fromEntries(update.changes.map(c => [c.fieldName, c]));",
+                  "pm.test('method: manual -> cip', () => {",
+                  "  pm.expect(byField.method.oldValue).to.eql('manual');",
+                  "  pm.expect(byField.method.newValue).to.eql('cip');",
+                  "});",
+                  "pm.test('notes carries the old text', () =>",
+                  "  pm.expect(byField.notes.oldValue).to.eql('Post-changeover clean.'));",
+                  "pm.collectionVariables.set('savedEventCount', events.length);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Re-save the SAME values (no-op)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/cleaning-records/{{recordId}}",
+            "description": "A user who opens the edit form and saves without changing anything. Succeeds, but must write no audit event: 'someone updated this' with nothing beneath it is noise a reviewer has to read past.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"cip\",\n  \"notes\": \"Rinse extended to 12 min.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Audit unchanged after the no-op",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/cleaning-records/{{recordId}}/audit",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('no new event was written', () =>",
+                  "  pm.expect(pm.response.json().data.length)",
+                  "    .to.eql(Number(pm.collectionVariables.get('savedEventCount'))));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Clear a field (notes → null)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/cleaning-records/{{recordId}}",
+            "description": "An explicit null CLEARS the field and must produce an audit line. Compare with omitting the key entirely, which leaves it alone. Those are different requests and the diff preserves the difference.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notes\": null\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('notes is now null', () => pm.expect(pm.response.json().data.notes).to.be.null);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Audit shows value → null",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/cleaning-records/{{recordId}}/audit",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const newest = pm.response.json().data[0];",
+                  "const notes = newest.changes.find(c => c.fieldName === 'notes');",
+                  "pm.test('recorded as a change to null', () => {",
+                  "  pm.expect(notes.oldValue).to.eql('Rinse extended to 12 min.');",
+                  "  pm.expect(notes.newValue).to.be.null;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5 · Roles & verification",
+      "description": "Segregation of duties: the person who logs a cleaning is not the person who attests to it.",
+      "item": [
+        {
+          "name": "Operator tries to verify → 403",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/cleaning-records/{{recordId}}",
+            "description": "Enforced in the service layer, not only in route middleware, so every caller of the update path gets the check.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"verified\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('forbidden', () => pm.expect(pm.response.json().error.code).to.eql('forbidden'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login as supervisor (Ravi)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/auth/login",
+            "description": "Replaces the session in Postman's cookie jar. Everything after this runs as a supervisor.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{supervisorEmail}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('role is supervisor', () =>",
+                  "  pm.expect(pm.response.json().data.role).to.eql('supervisor'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Supervisor verifies → 200",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/cleaning-records/{{recordId}}",
+            "description": "`verified_by_user_id` and `verified_at` come from the server, never the request body: they are facts about the system, not claims about the physical world.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"verified\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json().data;",
+                  "pm.test('status is verified', () => pm.expect(r.status).to.eql('verified'));",
+                  "pm.test('verifier recorded from the session', () =>",
+                  "  pm.expect(r.verifiedByUserId).to.eql(pm.collectionVariables.get('supervisorId')));",
+                  "pm.test('verifiedAt set by the server', () => pm.expect(r.verifiedAt).to.not.be.null);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Audit shows three fields moving together",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/cleaning-records/{{recordId}}/audit",
+            "description": "One event, three lines, attributed to the supervisor — the segregation of duties is visible in the trail itself."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const newest = pm.response.json().data[0];",
+                  "pm.test('attributed to the supervisor', () =>",
+                  "  pm.expect(newest.actorLabel).to.contain(pm.collectionVariables.get('supervisorEmail')));",
+                  "pm.test('status, verifier and timestamp in ONE event', () =>",
+                  "  pm.expect(newest.changes.map(c => c.fieldName).sort())",
+                  "    .to.eql(['status', 'verified_at', 'verified_by_user_id']));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Un-verify → 422",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/cleaning-records/{{recordId}}",
+            "description": "A one-way transition. A mistaken verification is corrected by recording a new cleaning, which is what a regulated workflow expects.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"pending\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('unprocessable', () =>",
+                  "  pm.expect(pm.response.json().error.code).to.eql('unprocessable'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6 · Pagination",
+      "description": "Numbered pages over LIMIT/OFFSET. The trade against a cursor — arbitrary access and a total, paid for with a COUNT and a scan past skipped rows — is in NOTES.md.",
+      "item": [
+        {
+          "name": "Page 1 of 5",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipment/{{equipmentId}}/cleaning-records?page=1&pageSize=5",
+            "description": "Every list endpoint takes page and pageSize and returns a pageInfo. One contract across the API."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('pageInfo is complete', () =>",
+                  "  pm.expect(b.pageInfo).to.have.all.keys('page','pageSize','totalItems','totalPages'));",
+                  "pm.test('served page 1 at the size asked for', () => {",
+                  "  pm.expect(b.pageInfo.page).to.eql(1);",
+                  "  pm.expect(b.pageInfo.pageSize).to.eql(5);",
+                  "});",
+                  "pm.test('totalPages agrees with totalItems', () =>",
+                  "  pm.expect(b.pageInfo.totalPages).to.eql(Math.ceil(b.pageInfo.totalItems / 5)));",
+                  "pm.test('newest cleaning first', () => {",
+                  "  const times = b.data.map(r => r.cleanedAt);",
+                  "  pm.expect(times).to.eql([...times].sort().reverse());",
+                  "});",
+                  "pm.collectionVariables.set('totalPages', b.pageInfo.totalPages);",
+                  "pm.collectionVariables.set('page1Ids', b.data.map(r => r.id).join(','));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Page 2 — no row appears twice",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipment/{{equipmentId}}/cleaning-records?page=2&pageSize=5",
+            "description": "The unique id in the ORDER BY is what makes this hold. Sorting on cleaned_at alone leaves ties in an arbitrary order, and a page boundary landing inside a tie can repeat one row and hide another."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "const first = pm.collectionVariables.get('page1Ids').split(',');",
+                  "pm.test('no overlap with page 1', () =>",
+                  "  pm.expect(b.data.map(r => r.id).filter(id => first.includes(id))).to.eql([]));",
+                  "pm.test('page number reported back', () => pm.expect(b.pageInfo.page).to.eql(2));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Jump straight to the last page",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipment/{{equipmentId}}/cleaning-records?page={{totalPages}}&pageSize=5",
+            "description": "Arbitrary access is the reason for OFFSET. A cursor names the last row seen, which is enough to go forwards and nothing else."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('served the page asked for', () =>",
+                  "  pm.expect(b.pageInfo.page).to.eql(b.pageInfo.totalPages));",
+                  "pm.test('and it has rows', () => pm.expect(b.data.length).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Page past the end is clamped, not empty",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipment/{{equipmentId}}/cleaning-records?page=9999&pageSize=5",
+            "description": "Page 9 of a 12-page list stops existing the moment the page size changes from 10 to 25. Returning the last page, plus a pageInfo saying which page that turned out to be, beats an empty grid the user has to diagnose."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('clamped to the last page', () => pm.expect(b.pageInfo.page).to.eql(b.pageInfo.totalPages));",
+                  "pm.test('and it actually has rows', () => pm.expect(b.data.length).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Defaults when neither is given",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipment/{{equipmentId}}/cleaning-records",
+            "description": "A caller that passes nothing gets page 1 at the configured default size, not the whole table."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('page 1, size 20', () => {",
+                  "  pm.expect(b.pageInfo.page).to.eql(1);",
+                  "  pm.expect(b.pageInfo.pageSize).to.eql(20);",
+                  "});",
+                  "pm.collectionVariables.set('unfilteredTotal', b.pageInfo.totalItems);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Filter and pagination compose — the count follows the filter",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipment/{{equipmentId}}/cleaning-records?page=1&pageSize=5&status=pending",
+            "description": "A total that ignored the filter would render the right rows under the wrong number of pages."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('every row matches the filter', () =>",
+                  "  pm.expect(b.data.every(r => r.status === 'pending')).to.be.true);",
+                  "pm.test('total is the filtered total', () =>",
+                  "  pm.expect(b.pageInfo.totalItems).to.be.below(Number(pm.collectionVariables.get('unfilteredTotal') || 1e9)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "pageSize is clamped, not obeyed",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipment/{{equipmentId}}/cleaning-records?page=1&pageSize=5000",
+            "description": "One place decides how much data a single request may return, so no caller can ask for an unbounded response."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('clamped to 100', () => pm.expect(pm.response.json().pageInfo.pageSize).to.eql(100));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "page=0 → 400",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipment/{{equipmentId}}/cleaning-records?page=0",
+            "description": "Pages are 1-based. A zero is a bug in the caller, not a request for the first page, and answering it silently would hide an off-by-one."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('names the offending field', () =>",
+                  "  pm.expect(pm.response.json().error.details[0].path).to.eql('page'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Audit history is paginated the same way",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/cleaning-records/{{recordId}}/audit?page=1&pageSize=2",
+            "description": "Same contract on every list endpoint. No endpoint can return an unbounded set, even one that usually holds a handful of rows."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('at most pageSize events', () => pm.expect(b.data.length).to.be.at.most(2));",
+                  "pm.test('carries a pageInfo too', () => pm.expect(b.pageInfo.pageSize).to.eql(2));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7 · Validation & error handling",
+      "description": "One error envelope throughout: { error: { code, message, details? } }. No stack traces, no SQL, no constraint names.",
+      "item": [
+        {
+          "name": "Malformed JSON → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/equipment",
+            "description": "body-parser throws BEFORE any route or schema runs. Unhandled that becomes a 500, which blames the server for the caller's mistake. Translated explicitly.",
+            "body": {
+              "mode": "raw",
+              "raw": "{code: not-json}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('bad_request, not internal_error', () =>",
+                  "  pm.expect(pm.response.json().error.code).to.eql('bad_request'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown field → 400",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/cleaning-records/{{recordId}}",
+            "description": "Schemas are strict: a typo is reported, not silently dropped. Ignoring it would leave the caller wondering why nothing changed.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"methodd\": \"cip\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('mentions the unrecognised key', () =>",
+                  "  pm.expect(JSON.stringify(pm.response.json().error.details)).to.contain('methodd'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Empty patch → 400",
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": "{{baseUrl}}/cleaning-records/{{recordId}}",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Future cleaning date → 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/equipment/{{equipmentId}}/cleaning-records",
+            "description": "Enforced in the service layer, because now() is not immutable and PostgreSQL will not accept it in a CHECK constraint.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cleanedAt\": \"2030-01-01T00:00:00Z\",\n  \"method\": \"cip\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('names cleanedAt', () =>",
+                  "  pm.expect(pm.response.json().error.details[0].path).to.eql('cleanedAt'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Bad uuid in the path → 400",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/cleaning-records/not-a-uuid/audit",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Missing record → 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/cleaning-records/00000000-0000-4000-8000-000000000000",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('not_found', () => pm.expect(pm.response.json().error.code).to.eql('not_found'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown route → 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/nope",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "8 · Retirement, not deletion",
+      "description": "A hard delete would either orphan cleaning history or cascade it away. Both are wrong for an auditable system.",
+      "item": [
+        {
+          "name": "Create a record on the test asset",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/equipment/{{newEquipmentId}}/cleaning-records",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cleanedAt\": \"2026-09-09T05:00:00Z\",\n  \"method\": \"cop\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('retiredAssetRecordId', pm.response.json().data.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE retires the asset",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/equipment/{{newEquipmentId}}",
+            "description": "The verb is what a caller reaches for; the response shows what actually happened. The row is never removed."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status is retired, and the row still exists', () =>",
+                  "  pm.expect(pm.response.json().data.status).to.eql('retired'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Its history is still readable",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/cleaning-records/{{retiredAssetRecordId}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "But it cannot take new records → 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "content-type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/equipment/{{newEquipmentId}}/cleaning-records",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cleanedAt\": \"2026-09-09T06:00:00Z\",\n  \"method\": \"cip\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Retiring twice → 409",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/equipment/{{newEquipmentId}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/auth/logout",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "host",
+      "value": "http://localhost:4000",
+      "description": "Origin only. Used to clear the cookie jar."
+    },
+    {
+      "key": "baseUrl",
+      "value": "{{host}}/api"
+    },
+    {
+      "key": "operatorEmail",
+      "value": "priya@leucine.test",
+      "description": "Seeded operator. May log cleanings, may not verify them."
+    },
+    {
+      "key": "supervisorEmail",
+      "value": "ravi@leucine.test",
+      "description": "Seeded supervisor. May verify."
+    },
+    {
+      "key": "password",
+      "value": "password123",
+      "description": "Shared by all seeded users. Development only."
+    },
+    {
+      "key": "equipmentId",
+      "value": "",
+      "description": "Captured from the equipment list (MIX-101)."
+    },
+    {
+      "key": "newEquipmentId",
+      "value": "",
+      "description": "Captured when creating a test asset."
+    },
+    {
+      "key": "newEquipmentCode",
+      "value": "",
+      "description": "Generated per run to avoid the unique index."
+    },
+    {
+      "key": "recordId",
+      "value": "",
+      "description": "Captured when creating a cleaning record."
+    },
+    {
+      "key": "retiredAssetRecordId",
+      "value": ""
+    },
+    {
+      "key": "operatorId",
+      "value": ""
+    },
+    {
+      "key": "supervisorId",
+      "value": ""
+    },
+    {
+      "key": "page1Ids",
+      "value": ""
+    },
+    {
+      "key": "savedEventCount",
+      "value": ""
+    },
+    {
+      "key": "savedAssetEventCount",
+      "value": ""
+    },
+    {
+      "key": "totalPages",
+      "value": ""
+    },
+    {
+      "key": "unfilteredTotal",
+      "value": ""
+    }
+  ]
+}

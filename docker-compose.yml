@@ -1,0 +1,93 @@
+# ---------------------------------------------------------------------------
+# The whole system, one command:
+#
+#     docker compose up --build
+#
+# Three services. Compose creates a private network for them, so they reach
+# each other by SERVICE NAME — the API connects to a host literally called
+# "db". Nothing needs to know an IP address in advance.
+#
+# Ports are deliberately chosen not to collide with a local install:
+#   web  http://localhost:8080     the application
+#   api  http://localhost:4000     for Postman  (override with API_HOST_PORT)
+#   db   localhost:5433            for DBeaver  (5432 is left to any local server)
+# ---------------------------------------------------------------------------
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: cleaning_log
+    ports:
+      - "5433:5432"          # host:container — inside the network it is still 5432
+    volumes:
+      # A named volume. Container filesystems are thrown away on `down`; this
+      # is the one place data survives, which is what makes a database in a
+      # container usable at all. `docker compose down -v` deletes it.
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      # "Started" is not "ready to accept connections" — Postgres takes a
+      # moment to initialise on first run. The API waits for THIS, not for the
+      # container to exist, which is the single most common compose mistake.
+      test: ["CMD-SHELL", "pg_isready -U postgres -d cleaning_log"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  api:
+    build:
+      # The context is the repository ROOT, not api/, because the API's types
+      # live in ../shared and Docker cannot copy from above its context.
+      context: .
+      dockerfile: api/Dockerfile
+    environment:
+      # Host "db" is the service above. Port 5432 is the container's own port —
+      # the 5433 mapping only exists for tools on the host.
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/cleaning_log
+      PGSSLMODE: disable
+      PORT: "4000"
+      NODE_ENV: production
+      # Overridable from a .env file beside this one; the fallback keeps
+      # `docker compose up` working with no setup at all.
+      JWT_SECRET: ${JWT_SECRET:-dev-only-compose-secret-change-me}
+      SESSION_TTL_SECONDS: "28800"
+      # The browser talks to nginx on :8080, and nginx proxies /api onward, so
+      # requests are same-origin and CORS is never exercised. Set correctly
+      # anyway, so a direct call from the front-end origin would also work.
+      CORS_ORIGIN: http://localhost:8080
+    ports:
+      # The only port that can collide with the everyday dev setup, because
+      # `npm run dev` in api/ also listens on 4000. Set API_HOST_PORT in .env
+      # to publish it somewhere else and run both at once. Only the HOST side
+      # moves -- inside the network the API is always api:4000, so nginx and
+      # the front-end are unaffected.
+      - "${API_HOST_PORT:-4000}:4000"
+    depends_on:
+      db:
+        condition: service_healthy
+    # Migrations run on every start (they are idempotent — already-applied ones
+    # are skipped). The seed runs only when the database is empty, so a restart
+    # never discards data someone entered.
+    command: >
+      sh -c "node dist/api/scripts/migrate.js &&
+             node dist/api/scripts/seed.js --if-empty &&
+             node dist/api/src/server.js"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  db-data:

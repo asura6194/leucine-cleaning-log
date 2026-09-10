@@ -1,0 +1,28 @@
+# Everything here is excluded from the build context — the snapshot of files
+# sent to the Docker daemon before a build starts.
+#
+# It matters for speed (node_modules is ~200 MB and would be copied only to be
+# overwritten by `npm ci`) and for safety: .env holds real credentials and must
+# never end up in an image layer, where it would persist even if a later
+# instruction deleted it.
+
+**/node_modules
+**/dist
+**/.env
+**/.env.local
+
+.git
+.gitignore
+.github
+
+docs
+"For my understanding"
+*.md
+!api/migrations/*.md
+
+**/coverage
+**/*.log
+**/.DS_Store
+**/Thumbs.db
+.vscode
+.idea

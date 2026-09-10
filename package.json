@@ -1,0 +1,25 @@
+{
+  "name": "leucine-cleaning-log",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Equipment cleaning log with a field-level audit trail",
+  "scripts": {
+    "install:all": "npm run install:api && npm run install:web",
+    "install:api": "cd api && npm install",
+    "install:web": "cd web && npm install",
+    "dev:api": "npm --prefix api run dev",
+    "dev:web": "npm --prefix web run dev",
+    "start": "npm --prefix api run start",
+    "build:web": "npm --prefix web run build",
+    "migrate": "npm --prefix api run migrate",
+    "migrate:status": "npm --prefix api run migrate:status",
+    "seed": "npm --prefix api run seed",
+    "db:reset": "npm --prefix api run db:reset",
+    "typecheck": "npm --prefix api run typecheck && npm --prefix web run typecheck",
+    "test": "npm --prefix api run test && npm --prefix web run test",
+    "verify": "npm run typecheck && npm run test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

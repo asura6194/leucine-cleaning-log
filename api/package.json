@@ -6,6 +6,8 @@
   "scripts": {
     "migrate": "tsx scripts/migrate.ts",
     "migrate:status": "tsx scripts/migrate.ts --status",
+    "seed": "tsx scripts/seed.ts",
+    "db:reset": "tsx scripts/migrate.ts --reset --force && tsx scripts/migrate.ts && tsx scripts/seed.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -1,0 +1,15 @@
+{
+  // The everyday tsconfig has noEmit: true, because in development the code is
+  // run straight from TypeScript by tsx. A container should not ship a
+  // TypeScript runtime, so the image compiles to plain JavaScript first and
+  // this config is what does it.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "sourceMap": true,
+    "declaration": false
+  },
+  // Tests and the vitest config are not part of the running application.
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "../shared/**/*.ts"]
+}
